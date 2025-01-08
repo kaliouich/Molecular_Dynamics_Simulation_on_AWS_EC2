@@ -6,12 +6,13 @@ import os
 
 def get_default_vpc(ec2):
     try:
-        vpcs = ec2.vpcs.all()
-        for vpc in vpcs:
-            if vpc.is_default:
-                return vpc.id, vpc.cidr_block
-        print("No default VPC found.")
-        sys.exit(1)
+        vpcs = ec2.vpcs.filter(Filters=[{'Name': 'tag:Name', 'Values': ['project-vpc']}])
+        vpc = list(vpcs)[0] if vpcs else None
+        if vpc:
+            return vpc.id, vpc.cidr_block
+        else:
+            print("No VPC named 'project-vpc' found.")
+            sys.exit(1)
 
     except Exception as e:
         print(f"Error in retrieving the default VPC: {e}")
@@ -38,7 +39,7 @@ def create_key_pair(ec2):
 
 def get_or_create_security_group(ec2, group_name, vpc_id):
     try:
-        existing_groups = ec2.security_groups.filter(Filters=[{'Name': 'group-name', 'Values': [group_name]}])
+        existing_groups = ec2.security_groups.filter(Filters=[{'Name': 'group-name', 'Values': ['project-sgn']}])
         for group in existing_groups:
             return group.id
         
@@ -51,12 +52,17 @@ def get_or_create_security_group(ec2, group_name, vpc_id):
 
 def get_or_create_subnet(ec2, cidr_block, vpc_id):
     try:
-        existing_subnets = list(ec2.subnets.filter(Filters=[{'Name': 'cidrBlock', 'Values': [cidr_block]}]))
+        existing_subnets = list(ec2.subnets.filter(Filters=[{'Name': 'vpc-id', 'Values': [vpc_id]}]))
         if existing_subnets:
             return existing_subnets[0].id
         
         response = ec2.create_subnet(CidrBlock=cidr_block, VpcId=vpc_id)
-        return response.id
+        subnet_id = response.id
+
+        # Modify the subnet attribute to enable public IP assignment
+        ec2.Subnet(subnet_id).modify_attribute(MapPublicIpOnLaunch={'Value': True})
+
+        return subnet_id
 
     except Exception as e:
         print(f"Error in creating or fetching subnet: {e}")
