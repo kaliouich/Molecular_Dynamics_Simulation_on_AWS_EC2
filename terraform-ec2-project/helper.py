@@ -1,38 +1,59 @@
 import json
-import boto3
+import paramiko
 
-def download_key_pair(key_name, private_key_path):
-    ec2_client = boto3.client('ec2')
-    try:
-        key_pair = ec2_client.describe_key_pairs(KeyNames=[key_name])
-        key_material = key_pair['KeyPairs'][0]['KeyMaterial']
-        
-        with open(private_key_path, 'w') as file:
-            file.write(key_material)
-        
-        print(f"Key pair '{key_name}' downloaded and saved to '{private_key_path}'")
-    except Exception as e:
-        print(f"Error downloading key pair: {e}")
-
-def get_terraform_state_info(tfstate_path):
+def get_terraform_outputs(tfstate_path):
     try:
         with open(tfstate_path, 'r') as file:
             tfstate = json.load(file)
         
-        return tfstate
+        outputs = tfstate.get('outputs', {})
+        instance_public_ip = outputs.get('instance_public_ip', {}).get('value')
+        private_key_path = outputs.get('private_key_path', {}).get('value')
+        instance_user = outputs.get('instance_user', {}).get('value')  # Get the user
+        
+        return instance_public_ip, private_key_path, instance_user  # Return the user as well
     except Exception as e:
         print(f"Error reading terraform state file: {e}")
-        return None
+        return None, None, None
+
+def ssh_connect(instance_public_ip, private_key_path, username):
+    try:
+        print(f"Connecting to {instance_public_ip} with key {private_key_path} as {username}")
+        key = paramiko.RSAKey.from_private_key_file(private_key_path)
+        ssh = paramiko.SSHClient()
+        ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        ssh.connect(hostname=instance_public_ip, username=username, pkey=key)
+        
+        print(f"Successfully connected to {instance_public_ip}")
+        
+        # Start an interactive shell session
+        ssh_shell = ssh.invoke_shell()
+        
+        # Keep the shell interactive
+        while True:
+            # Example of keeping the shell alive and ready for input
+            command = input(f"{username}@{instance_public_ip}:~$ ")  # Prompt for user input
+            if command.lower() in ['exit', 'quit']:
+                break  # Exit the shell if the user types 'exit' or 'quit'
+            ssh_shell.send(command + '\n')  # Send the command to the server
+            
+            # Read the response from the shell
+            while ssh_shell.recv_ready():
+                output = ssh_shell.recv(1024).decode('utf-8')
+                print(output, end='')  # Print the command output
+        
+        ssh.close()
+    except paramiko.AuthenticationException as auth_error:
+        print(f"Authentication failed: {auth_error}")
+    except Exception as e:
+        print(f"Error connecting via SSH: {e}")
 
 if __name__ == "__main__":
-    key_name = "deployer-key"
-    private_key_path = "./deployer-key.pem"
     tfstate_path = "./terraform.tfstate"
     
-    # Download the key pair
-    download_key_pair(key_name, private_key_path)
+    # Get the public IP, private key path, and user from terraform.tfstate
+    instance_public_ip, private_key_path, instance_user = get_terraform_outputs(tfstate_path)
     
-    # Get information from terraform.tfstate
-    tfstate_info = get_terraform_state_info(tfstate_path)
-    if tfstate_info:
-        print(json.dumps(tfstate_info, indent=4))
+    if instance_public_ip and private_key_path and instance_user:  # Check if all are available
+        # Connect via SSH
+        ssh_connect(instance_public_ip, private_key_path, instance_user)  # Pass the user to the function

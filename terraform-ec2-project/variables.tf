@@ -28,6 +28,12 @@ variable "ami_id" {
   default     = "ami-042c0d1e87e056819"  # Replace this with a valid AMI ID for your region
 }
 
+variable "instance_user" {
+  description = "The user to connect to the EC2 instance"
+  type        = string
+  default     = "ubuntu"  # This is for Ubuntu instances
+}
+
 variable "instance_type" {
   description = "The instance type for the EC2 instance"
   type        = string
