@@ -1,4 +1,4 @@
-# Ultimate User Guide: AWS EC2 Instance Deployment with Terraform
+# User Guide: AWS EC2 Instance Deployment with Terraform
 
 ## Table of Contents
 1. [Introduction](#introduction)
