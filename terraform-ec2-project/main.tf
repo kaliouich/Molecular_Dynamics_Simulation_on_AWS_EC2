@@ -86,6 +86,19 @@ resource "aws_instance" "ec2_instance" {
   key_name               = var.key_name
   associate_public_ip_address = true
 
+  provisioner "remote-exec" {
+    inline = [
+      "sudo apt update -y",
+      "sudo apt install -y gromacs"
+    ]
+    connection {
+      type        = "ssh"
+      user        = "ubuntu"      # Use the appropriate user for your AMI
+      private_key = file(var.private_key_path)
+      host        = self.public_ip
+    }
+  }
+
   tags = {
     Name = "ec2_instance"
   }
