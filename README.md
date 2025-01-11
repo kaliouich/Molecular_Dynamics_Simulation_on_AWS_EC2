@@ -6,13 +6,13 @@
 3. [Project Components](#project-components)
 4. [Step-by-Step Guide](#step-by-step-guide)
 5. [Connecting to the EC2 Instance](#connecting-to-the-ec2-instance)
-6. [Understanding helper.py](#understanding-helperpy)
+6. [Automatic Installation of GROMACS](#automatic-installation-of-gromacs)
 7. [Cleaning Up](#cleaning-up)
 8. [Troubleshooting](#troubleshooting)
 
 ## Introduction
 
-This guide walks you through using Terraform to create an Amazon EC2 instance along with all necessary components in AWS. We'll also cover how to connect to the instance using a helper Python script.
+This guide walks you through using Terraform to create an Amazon EC2 instance along with all necessary components in AWS. We'll also cover how to connect to the instance using SSH and the automatic installation of GROMACS.
 
 ## Prerequisites
 
@@ -21,7 +21,7 @@ Before you begin, ensure you have:
 1. An AWS account
 2. AWS CLI installed and configured with your credentials
 3. Terraform installed on your local machine
-4. Python 3.x installed on your local machine
+4. SSH client installed on your local machine
 
 > **Important Note:** 
 You can use my preconfigured DevContainer for Terraform and AWS projects here: https://github.com/kaliouich/lab_devContainer.git
@@ -86,36 +86,73 @@ After the apply completes, note down the following outputs:
 
 ## Connecting to the EC2 Instance
 
-### Using the helper.py Script
-
-1. Ensure you have the `helper.py` file in your project directory.
-
-2. Run the helper script:
+To connect to your EC2 instance using SSH, use the following command structure:
 
 ```bash
-python helper.py
+ssh -i <private_key_path> <instance_user>@<instance_public_ip>
 ```
 
-3. Follow the prompts to enter the instance's public IP and the path to the private key file.
+Replace the placeholders with the actual values from the Terraform outputs:
 
-4. The script will establish an SSH connection to your EC2 instance.
+- `<private_key_path>`: The path to your private key file
+- `<instance_user>`: The user for the EC2 instance (usually "ubuntu" for Ubuntu AMIs)
+- `<instance_public_ip>`: The public IP address of your EC2 instance
 
-## Understanding helper.py
-
-The `helper.py` script simplifies the process of connecting to your EC2 instance. Here's what it does:
-
-1. Prompts you for the EC2 instance's public IP address and the path to your private key file.
-2. Sets the correct permissions (400) on the private key file.
-3. Constructs and executes the SSH command to connect to your EC2 instance.
-4. Handles potential errors and provides user-friendly messages.
-
-To use the script, simply run:
+Example:
 
 ```bash
-python helper.py
+ssh -i ~/.ssh/mykey.pem ubuntu@54.123.45.67
 ```
 
-And follow the prompts. This script makes it easy for non-technical users to connect to the EC2 instance without needing to remember complex SSH commands.
+If you encounter a permissions error, ensure your private key file has the correct permissions:
+
+```bash
+chmod 400 <private_key_path>
+```
+
+## Automatic Installation of GROMACS
+
+This project includes an automatic installation of GROMACS on the EC2 instance using Terraform's `remote-exec` provisioner. Here's what happens:
+
+1. After the EC2 instance is created, Terraform uses SSH to connect to the instance.
+2. It then runs the following commands:
+   - Updates the package lists: `sudo apt update -y`
+   - Installs GROMACS: `sudo apt install -y gromacs`
+
+This process ensures that GROMACS is ready to use as soon as the EC2 instance is provisioned. Here's a breakdown of the provisioner block:
+
+```hcl
+provisioner "remote-exec" {
+  inline = [
+    "sudo apt update -y",
+    "sudo apt install -y gromacs"
+  ]
+  connection {
+    type        = "ssh"
+    user        = "ubuntu"
+    private_key = file(var.private_key_path)
+    host        = self.public_ip
+  }
+}
+```
+
+- The `remote-exec` provisioner allows execution of scripts on the remote resource after it's created.
+- The `inline` block specifies the commands to run.
+- The `connection` block defines how Terraform should connect to the instance:
+  - It uses SSH
+  - The user is "ubuntu" (appropriate for Ubuntu AMIs)
+  - It uses the private key specified in `var.private_key_path`
+  - The host is the public IP of the newly created instance
+
+### Verifying GROMACS Installation
+
+After connecting to your EC2 instance via SSH, you can verify the GROMACS installation by running:
+
+```bash
+gmx --version
+```
+
+This should display the version information for GROMACS if it was installed successfully.
 
 ## Cleaning Up
 
@@ -132,6 +169,9 @@ Type 'yes' when prompted to destroy the resources.
 - **SSH Connection Issues**: Ensure your security group allows inbound traffic on port 22.
 - **AWS Credentials**: Make sure your AWS CLI is configured with the correct credentials.
 - **Terraform Errors**: Double-check your `variables.tf` file for any typos or incorrect values.
-- **helper.py Issues**: Ensure you're using the correct public IP and private key path. Check that Python is installed correctly.
+- **SSH Key Permissions**: Ensure your private key file has the correct permissions (chmod 400).
 
 For more detailed troubleshooting, refer to the AWS and Terraform documentation or seek assistance from the project maintainers.
+```
+
+This updated README removes the helper.py section and provides clear instructions on how to use the SSH command directly with the Terraform outputs. It also maintains the information about the automatic GROMACS installation and other relevant sections.
