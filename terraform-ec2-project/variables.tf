@@ -25,7 +25,7 @@ variable "availability_zone" {
 variable "ami_id" {
   description = "The AMI ID for the EC2 instance"
   type        = string
-  default     = "ami-042c0d1e87e056819"  # Replace this with a valid AMI ID for your region
+  default     = "ami-0c398cb65a93047f2"  # Official Canonical Ubuntu 22.04 LTS AMI
 }
 
 variable "instance_user" {
