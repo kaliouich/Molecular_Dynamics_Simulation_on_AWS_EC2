@@ -29,17 +29,33 @@ def get_terraform_outputs(tfstate_path):
         instance_user = outputs.get('instance_user', {}).get('value')
         print(f"Instance user: {instance_user}")
         
-        return instance_public_ip, private_key_path, instance_user
+        private_instance_ip = outputs.get('private_instance_ip', {}).get('value')
+        print(f"Private instance IP: {private_instance_ip}")
+        
+        return instance_public_ip, private_key_path, instance_user, private_instance_ip
     except Exception as e:
         print(f"Error reading terraform state file: {e}")
         return None, None, None
 
-def ssh_connect(instance_public_ip, private_key_path, username):
+def ssh_connect(instance_public_ip, private_key_path, username, private_instance_ip=None):
     try:
         print(f"Connecting to {instance_public_ip} with key {private_key_path} as {username}")
         
         # Ensure the private key has correct permissions (required by ssh)
         os.chmod(private_key_path, 0o600)
+        
+        # First, copy the private key to the public instance
+        scp_command = [
+            "scp",
+            "-i", private_key_path,
+            "-o", "StrictHostKeyChecking=no",
+            "-o", "UserKnownHostsFile=/dev/null",
+            private_key_path,
+            f"{username}@{instance_public_ip}:~/.ssh/private_instance_key"
+        ]
+        
+        print("Copying private key to public instance...")
+        subprocess.run(scp_command, check=True)
         
         # Build the SSH command
         ssh_command = [
@@ -66,8 +82,8 @@ def ssh_connect(instance_public_ip, private_key_path, username):
 if __name__ == "__main__":
     tfstate_path = "./terraform.tfstate"
     
-    # Get the public IP, private key path, and user from terraform.tfstate
-    instance_public_ip, private_key_path, instance_user = get_terraform_outputs(tfstate_path)
+    # Get all outputs from terraform.tfstate
+    instance_public_ip, private_key_path, instance_user, private_instance_ip = get_terraform_outputs(tfstate_path)
     
     # Check if we have all required values
     if not instance_public_ip:
@@ -80,6 +96,29 @@ if __name__ == "__main__":
         print("Error: No instance user found in terraform outputs")
         sys.exit(1)
     
-    # If we have all values, try to connect
-    print("\nAttempting SSH connection...")
-    ssh_connect(instance_public_ip, private_key_path, instance_user)
+# Print connection information for both instances
+print("\nConnection Information:")
+print("=====================")
+print("\nPublic Instance:")
+print("--------------")
+print(f"Public IP: {instance_public_ip}")
+print(f"Username: {instance_user}")
+print(f"SSH Command: ssh -i {private_key_path} {instance_user}@{instance_public_ip}")
+
+if private_instance_ip:
+    print("\nPrivate Instance:")
+    print("---------------")
+    print(f"Private IP: {private_instance_ip}")
+    print(f"Username: {instance_user}")
+    print("\nSteps to connect to private instance:")
+    print("1. First connect to the public instance (will be done automatically)")
+    print("2. The private key will be copied to: ~/.ssh/private_instance_key")
+    print("3. Then on the public instance run:")
+    print(f"   chmod 600 ~/.ssh/private_instance_key")
+    print(f"   ssh -i ~/.ssh/private_instance_key {instance_user}@{private_instance_ip}")
+
+print("\nProceeding to connect to public instance...")
+print("=========================================")
+
+# Now connect to the public instance
+ssh_connect(instance_public_ip, private_key_path, instance_user, private_instance_ip)
