@@ -4,15 +4,18 @@
 1. [Introduction](#introduction)
 2. [Prerequisites](#prerequisites)
 3. [Project Components](#project-components)
-4. [Step-by-Step Guide](#step-by-step-guide)
-5. [Connecting to the EC2 Instance](#connecting-to-the-ec2-instance)
-6. [Automatic Installation of GROMACS](#automatic-installation-of-gromacs)
-7. [Cleaning Up](#cleaning-up)
-8. [Troubleshooting](#troubleshooting)
+4. [Networking & NAT Gateway (detailed)](#networking--nat-gateway-detailed)
+5. [Step-by-Step Guide](#step-by-step-guide)
+6. [Connecting to Instances (public & private)](#connecting-to-instances-public--private)
+7. [Automatic Installation of GROMACS](#automatic-installation-of-gromacs)
+8. [Cleaning Up](#cleaning-up)
+9. [Troubleshooting & Security Notes](#troubleshooting--security-notes)
 
 ## Introduction
 
-This guide walks you through using Terraform to create an Amazon EC2 instance along with all necessary components in AWS. We'll also cover how to connect to the instance using SSH and the automatic installation of GROMACS.
+This repository holds a small Terraform configuration that deploys a VPC, a public subnet, a private subnet, a public EC2 instance (bastion/public instance), a private EC2 instance, and the network plumbing required for the private instance to reach the internet safely using a NAT Gateway.
+
+The goal: provide a private EC2 that can download updates and packages from the internet while remaining unreachable from the public internet. Access to that private EC2 is possible only via the public EC2 (bastion), preserving a minimal public attack surface.
 
 ## Prerequisites
 
@@ -23,109 +26,125 @@ Before you begin, ensure you have:
 3. Terraform installed on your local machine
 4. SSH client installed on your local machine
 
-> **Important Note:** 
-You can use my preconfigured DevContainer for Terraform and AWS projects here: https://github.com/kaliouich/lab_devContainer.git
+You can also use the repository's DevContainer to get a reproducible environment.
 
 ## Project Components
 
-This project creates the following AWS resources:
+This Terraform project creates these resources (overview):
 
-1. **Virtual Private Cloud (VPC)**: A private network for your EC2 instance
-2. **Internet Gateway**: Allows communication between the VPC and the internet
-3. **Subnet**: A range of IP addresses in your VPC
-4. **Route Table**: Directs network traffic from the subnet
-5. **Security Group**: Acts as a virtual firewall for the EC2 instance
-6. **EC2 Instance**: The virtual server in AWS
-7. **Key Pair**: Used for SSH access to the EC2 instance
+- VPC (`aws_vpc.main`) — the virtual network that contains everything.
+- Internet Gateway (`aws_internet_gateway.main`) — attaches the VPC to the public internet for resources that need direct access.
+- Public Subnet (`aws_subnet.public_subnet`) — hosts resources that can have public IPs (the bastion/public EC2 and the NAT Gateway).
+- Private Subnet (`aws_subnet.private_subnet`) — hosts private resources (the private EC2) with no public IPs.
+- Route Table (public) (`aws_route_table.main`) — routes outbound traffic from the public subnet to the Internet Gateway.
+- NAT Gateway (`aws_nat_gateway.main`) + Elastic IP (`aws_eip.nat`) — provides outbound-only internet access for resources in the private subnet.
+- Route Table (private) (`aws_route_table.private`) — routes outbound traffic from the private subnet to the NAT Gateway.
+- Security Group (`aws_security_group.ssh`) — controls SSH access (current config allows SSH from the internet; see security notes below).
+- EC2 Instances (`aws_instance.ec2_instance`, `aws_instance.private_instance`) — the public (bastion) and private VMs.
+- Key Pair + local saving (`null_resource.create_key_pair`) — creates a key pair via the AWS CLI and saves the private key locally so you can SSH into the public VM.
+
+## Networking & NAT Gateway (detailed)
+
+This section explains the networking pattern used and why a NAT Gateway is required for a private subnet to access the internet.
+
+High level:
+
+- Instances in the private subnet do not have public IP addresses and are therefore not directly reachable from the internet.
+- When a private instance needs to download OS updates or pull packages from the internet, it must send traffic to an endpoint outside the VPC. Because it has no public IP, that outbound traffic needs a device in the public subnet that can translate and forward traffic to the internet while still keeping the private instance unreachable from inbound internet connections.
+
+How the design implements that:
+
+1. NAT Gateway + Elastic IP
+   - The NAT Gateway is created in the public subnet and is assigned an Elastic IP.
+   - Private-subnet route table directs 0.0.0.0/0 traffic to the NAT Gateway.
+   - When the private instance initiates an outbound connection, the NAT Gateway translates the source address to the NAT Gateway's Elastic IP and forwards the request to the internet.
+   - Responses return to the NAT Gateway which maps them back to the originating private instance and forwards them inside the VPC.
+
+2. Route tables
+   - Public subnet's route table sends 0.0.0.0/0 to the Internet Gateway so public resources can be reached from the internet.
+   - Private subnet's route table sends 0.0.0.0/0 to the NAT Gateway so private resources can reach out but not accept inbound connections initiated from the internet.
+
+3. Security and exposure
+   - Private instances remain unreachable from the public internet because they have no public IP and no route from the Internet Gateway points to them.
+   - The NAT Gateway satisfies only outbound connectivity (it does not allow inbound connections to private instances).
+
+Cost & limits
+   - NAT Gateways are managed AWS resources with hourly costs and data processing charges. For short experiments they are convenient and easy; for cost-sensitive workloads consider using a NAT instance (self-managed) or schedule/destroy resources when not in use.
 
 ## Step-by-Step Guide
 
-### 1. Clone the Repository
+1. Clone the repository and change into the Terraform project directory.
 
 ```bash
-git clone https://github.com/kaliouich/CryptoAppAWS_CICD.git
-cd terraform-ec2-project
+git clone https://github.com/kaliouich/lab_devContainer.git
+cd Molecular_Dynamics_Simulation_on_AWS_EC2/terraform-ec2-project
 ```
 
-### 2. Review and Modify Variables
+2. Inspect `variables.tf` and set any values you want to override (AMI, instance type, key name, etc.).
 
-Open `variables.tf` and review the default values. Modify if needed:
-
-```bash
-nano variables.tf
-```
-
-### 3. Initialize Terraform
+3. Initialize and apply Terraform:
 
 ```bash
 terraform init
-```
-
-### 4. Plan the Deployment
-
-```bash
-terraform plan
-```
-
-Review the output to understand what resources will be created.
-
-### 5. Apply the Configuration
-
-```bash
 terraform apply
 ```
 
-Type 'yes' when prompted to create the resources.
+4. After `terraform.apply` completes, use the outputs (printed by Terraform or read from `terraform.tfstate`) to connect.
 
-### 6. Note the Outputs
+## Connecting to Instances (public & private)
 
-After the apply completes, note down the following outputs:
-- `instance_public_ip`
-- `instance_user`
-- `private_key_path`
+Outputs you'll get from Terraform:
 
-## Connecting to the EC2 Instance
+- `instance_public_ip` — public IP of the public (bastion) EC2 instance
+- `instance_user` — username to use when connecting (e.g. `ubuntu`)
+- `private_key_path` — path to the private key created locally by the project
+- `private_instance_ip` — private IP address of the EC2 instance in the private subnet
 
-To connect to your EC2 instance using SSH, use the following command structure:
+Recommended ways to access the private instance:
 
-```bash
-ssh -i <private_key_path> <instance_user>@<instance_public_ip>
-```
+1) SSH ProxyJump (recommended)
 
-Replace the placeholders with the actual values from the Terraform outputs:
-
-- `<private_key_path>`: The path to your private key file
-- `<instance_user>`: The user for the EC2 instance (usually "ubuntu" for Ubuntu AMIs)
-- `<instance_public_ip>`: The public IP address of your EC2 instance
-
-Example:
+From your local machine you can SSH directly to the private instance through the public instance using SSH's ProxyJump (single command, no permanent key copying):
 
 ```bash
-ssh -i ~/.ssh/mykey.pem ubuntu@54.123.45.67
+ssh -i <private_key_path> -J <instance_user>@<instance_public_ip> <instance_user>@<private_instance_ip>
 ```
 
-If you encounter a permissions error, ensure your private key file has the correct permissions:
+This uses the public instance as a jump host and does not copy private keys around.
+
+2) Copy the private key to the public instance (what the helper script automates)
+
+The helper script in this project automates copying your local private key to the public instance at `~/.ssh/private_instance_key` and then opens an interactive SSH session on the public instance. From there you can connect to the private instance using:
 
 ```bash
-chmod 400 <private_key_path>
+chmod 600 ~/.ssh/private_instance_key
+ssh -i ~/.ssh/private_instance_key <instance_user>@<private_instance_ip>
 ```
+
+Note: copying keys to other hosts increases risk; prefer ProxyJump or SSH agent forwarding.
+
+3) SSH Agent Forwarding
+
+You can enable agent forwarding when connecting to the public instance and then SSH to the private instance without copying keys:
+
+```bash
+ssh -A -i <private_key_path> <instance_user>@<instance_public_ip>
+# from public instance
+ssh <instance_user>@<private_instance_ip>
+```
+
+Security notes about these options are below.
 
 ## Automatic Installation of GROMACS
 
-This project includes an automatic installation of GROMACS on the EC2 instance using Terraform's `remote-exec` provisioner. Here's what happens:
+The Terraform configuration uses a `remote-exec` provisioner to run commands on the public instance after creation. The provisioner currently runs a basic update (and previously installed GROMACS). If you need GROMACS available on the private instance, install it there (for production use prefer configuration management or baked AMIs).
 
-1. After the EC2 instance is created, Terraform uses SSH to connect to the instance.
-2. It then runs the following commands:
-   - Updates the package lists: `sudo apt update -y`
-   - Installs GROMACS: `sudo apt install -y gromacs`
-
-This process ensures that GROMACS is ready to use as soon as the EC2 instance is provisioned. Here's a breakdown of the provisioner block:
+Provisioner example (public instance):
 
 ```hcl
 provisioner "remote-exec" {
   inline = [
-    "sudo apt update -y",
-    "sudo apt install -y gromacs"
+    "sudo apt update -y"
   ]
   connection {
     type        = "ssh"
@@ -136,42 +155,34 @@ provisioner "remote-exec" {
 }
 ```
 
-- The `remote-exec` provisioner allows execution of scripts on the remote resource after it's created.
-- The `inline` block specifies the commands to run.
-- The `connection` block defines how Terraform should connect to the instance:
-  - It uses SSH
-  - The user is "ubuntu" (appropriate for Ubuntu AMIs)
-  - It uses the private key specified in `var.private_key_path`
-  - The host is the public IP of the newly created instance
+If you want the private instance to have packages preinstalled, consider using one of:
 
-### Verifying GROMACS Installation
-
-After connecting to your EC2 instance via SSH, you can verify the GROMACS installation by running:
-
-```bash
-gmx --version
-```
-
-This should display the version information for GROMACS if it was installed successfully.
+- Bake a custom AMI with the required software
+- Use a configuration management tool (Ansible, Chef)
+- Use user data scripts on the private instance (run at boot)
 
 ## Cleaning Up
 
-To remove all created resources and avoid unnecessary charges:
+To remove all created resources and avoid ongoing charges:
 
 ```bash
 terraform destroy
 ```
 
-Type 'yes' when prompted to destroy the resources.
+Type 'yes' when prompted.
 
-## Troubleshooting
+## Troubleshooting & Security Notes
 
-- **SSH Connection Issues**: Ensure your security group allows inbound traffic on port 22.
-- **AWS Credentials**: Make sure your AWS CLI is configured with the correct credentials.
-- **Terraform Errors**: Double-check your `variables.tf` file for any typos or incorrect values.
-- **SSH Key Permissions**: Ensure your private key file has the correct permissions (chmod 400).
+- If the private instance cannot reach the internet, ensure the private route table points to the NAT Gateway and the NAT Gateway is in the public subnet with an Elastic IP.
+- If SSH fails, check security group rules and ensure the public instance has a public IP.
+- Current security group in the example allows SSH from anywhere (0.0.0.0/0). For better security:
+  - Limit SSH to specific IP ranges (your office/home IP)
+  - Use separate security groups: allow SSH to the private instance only from the public instance's security group
+  - Use SSH ProxyJump or agent forwarding to avoid copying private keys to other hosts
 
-For more detailed troubleshooting, refer to the AWS and Terraform documentation or seek assistance from the project maintainers.
-```
+- NAT Gateways incur cost. Destroy them when not in use.
+
+If you want, I can update the Terraform configuration to: create a dedicated security group for the private instance that only allows SSH from the public instance, or switch the helper script to use ProxyJump instead of copying keys. Tell me which option you prefer and I will apply it.
+
 
 This updated README removes the helper.py section and provides clear instructions on how to use the SSH command directly with the Terraform outputs. It also maintains the information about the automatic GROMACS installation and other relevant sections.
